@@ -109,6 +109,12 @@ enum Commands {
     /// UI con terminal integrada
     Tui,
 
+    /// Modo autónomo - planificación
+    Plan {
+        #[arg(trailing_var_arg(true))]
+        task: Vec<String>,
+    },
+
     /// Modo autónomo
     Auto {
         #[arg(trailing_var_arg(true))]
@@ -512,6 +518,62 @@ async fn main() -> Result<()> {
             
             // Interactive autonomous loop
             run_autonomous_loop(&client, &model, &agent, &auto_prompt).await?;
+        }
+        
+        Some(Commands::Plan { task }) => {
+            let task_str = task.join(" ");
+            if task_str.is_empty() {
+                println!("[selfidx-plan] Modo planificación. Usa: selfidx plan <tarea>");
+                return Ok(());
+            }
+            
+            println!("═══════════════════════════════════════════");
+            println!("   📋 MODO PLANIFICACIÓN");
+            println!("═══════════════════════════════════════════\n");
+            println!("Tarea: {}\n", task_str);
+            
+            let agent = Agent::new();
+            let client = VllmClient::from_env();
+            let model = VllmClient::default_model();
+            
+            if !client.is_available().await {
+                println!("[selfidx-error] vLLM no está disponible.");
+                println!("Inicia vLLM con: vllm serve");
+                return Ok(());
+            }
+            
+            let project_tree = agent.get_project_tree(3).unwrap_or_default();
+            
+            let plan_prompt = format!(
+                "Eres un asistente de planificación de código. Tu tarea es ANALIZAR la tarea y crear un PLAN detallado de los pasos a seguir, SIN ejecutar nada.\n\n=== PROYECTO ===\n{}\n\n=== TAREA ===\n{}\n\nINSTRUCCIONES:\n1. Analiza el código existente\n2. Identifica qué archivos necesitan modificarse\n3. Describe los pasos exactos para completar la tarea\n4. NO escribas código, solo describe qué harías\n\nResponde en español con un plan detallado.",
+                project_tree, task_str
+            );
+            
+            let messages = vec![
+                Message {
+                    role: "system".to_string(),
+                    content: "Eres un asistente de planificación. Analiza y planifica, no ejecutes.".to_string(),
+                },
+                Message {
+                    role: "user".to_string(),
+                    content: plan_prompt,
+                },
+            ];
+            
+            match client.chat(model, messages).await {
+                Ok(response) => {
+                    println!("\n=== PLAN DE ACCIÓN ===\n");
+                    println!("{}", response.content());
+                    
+                    println!("\n═══════════════════════════════════════════");
+                    println!("Para ejecutar este plan, usa:");
+                    println!("  selfidx --auto \"{}\"", task_str);
+                    println!("═══════════════════════════════════════════");
+                }
+                Err(e) => {
+                    println!("[selfidx-error] Error: {}", e);
+                }
+            }
         }
         
         None => {
