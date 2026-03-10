@@ -1,0 +1,38 @@
+[package]
+name = "selfidx"
+version = "3.0.0"
+edition = "2021"
+description = "Terminal integrada con vLLM - SELFIDEX v3.0"
+
+[dependencies]
+# CLI
+clap = { version = "4.4", features = ["derive"] }
+anyhow = "1.0"
+
+# Async
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+tokio-stream = "0.1"
+
+# HTTP Client (vLLM)
+reqwest = { version = "0.11", features = ["json", "stream"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Terminal UI
+crossterm = "0.28"
+tui = "0.19"
+ratatui = "0.24"
+
+# File operations
+fs4 = "0.8"
+notify = "6"
+
+# PTY (PowerShell)
+portable-pty = "0.8"
+
+# Utils
+url = "2"
+humantime = "2"
+dirs = "5"
+chrono = "0.4"
