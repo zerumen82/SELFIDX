@@ -6,15 +6,8 @@ echo   INSTALADOR SELFIDEX v3.0
 echo ==============================================
 echo.
 
-:: Check for admin rights
-net session >nul 2>&1
-if %errorlevel% neq 0 (
-    echo [INFO] Ejecutando como administrador...
-    powershell -Command "Start-Process cmd -ArgumentList '/c %~f0' -Verb RunAs"
-    exit /b
-)
-
-set "INSTALL_DIR=C:\Program Files\SELFIDEX"
+:: Use user's local directory instead of Program Files (no admin needed)
+set "INSTALL_DIR=%LOCALAPPDATA%\selfidx"
 set "BIN_DIR=%INSTALL_DIR%"
 set "EXE_NAME=selfidx.exe"
 
@@ -29,8 +22,22 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-echo [3/4] Agregando al PATH del sistema...
-setx PATH "%PATH%;%BIN_DIR%" >nul 2>&1
+echo [3/4] Agregando al PATH del usuario...
+:: Check if already in PATH
+echo %PATH% | find /I "%BIN_DIR%" >nul
+if %errorlevel% equ 0 (
+    echo [INFO] Ya esta en el PATH.
+) else (
+    :: Use setx to modify user PATH (not system PATH)
+    setx PATH "%PATH%;%BIN_DIR%" >nul 2>&1
+    if %errorlevel% neq 0 (
+        echo [ADVERTENCIA] No se pudo modificar el PATH automaticamente.
+        echo [INFO] Puedes agregar manualmente: %BIN_DIR%
+        echo [INFO] O ejecuta: setx PATH "%%PATH%%;%BIN_DIR%"
+    ) else (
+        echo [OK] Agregado al PATH del usuario.
+    )
+)
 
 echo [4/4] Creando acceso directo en el menu Inicio...
 powershell -Command "$WshShell = New-Object -ComObject WScript.Shell; $Shortcut = $WshShell.CreateShortcut('%USERPROFILE%\Start Menu\Programs\SELFIDEX.lnk'); $Shortcut.TargetPath = '%BIN_DIR%\%EXE_NAME%'; $Shortcut.WorkingDirectory = '%INSTALL_DIR%'; $Shortcut.Description = 'SELFIDEX v3.0 - Terminal con IA'; $Shortcut.Save()"
@@ -42,10 +49,10 @@ echo ==============================================
 echo.
 echo Ubicacion: %INSTALL_DIR%
 echo.
-echo Para usar, abre una nueva terminal y ejecuta:
+echo Para usar, abre una NUEVA terminal y ejecuta:
 echo   selfidx --help
 echo.
-echo NOTA: Si 'selfidx' no funciona, reinicia tu PC.
+echo NOTA: Si 'selfidx' no funciona, reinicia tu terminal.
 echo.
 
 pause

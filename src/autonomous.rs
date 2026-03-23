@@ -1,16 +1,16 @@
 // Autonomous agent module - Claude Code style
 
 use anyhow::Result;
-use crate::llm::{Message, VllmClient};
+use crate::llm::{Message, JanClient};
 use crate::agent::Agent;
 
 /// Run autonomous loop with tools and confirmation
 pub async fn run_autonomous_loop(
-    client: &VllmClient,
-    model: &str,
-    agent: &Agent,
-    initial_prompt: &str,
-) -> Result<()> {
+     client: &JanClient,
+     model: &str,
+     agent: &Agent,
+     initial_prompt: &str,
+ ) -> Result<()> {
     let max_iterations = 10;
     let mut messages: Vec<Message> = vec![
         Message {

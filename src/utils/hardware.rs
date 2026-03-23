@@ -194,7 +194,7 @@ impl SystemInfo {
 
     fn calculate_model_size(ram: f64, vram: Option<f64>) -> ModelSize {
         // Consider both RAM and VRAM for model loading
-        // vLLM can use system RAM as backup
+        // Local inference can use system RAM as backup
         let total_memory = ram + vram.unwrap_or(0.0);
         
         if total_memory >= 36.0 {
@@ -451,5 +451,75 @@ impl InstalledModel {
             let mb = self.size_bytes as f64 / (1024.0 * 1024.0);
             format!("{:.0} MB", mb)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::utils::format_size;
+
+    #[test]
+    fn test_system_info_detect() {
+        let info = SystemInfo::detect();
+        assert!(info.total_ram_gb > 0.0);
+        assert!(info.cpu_cores > 0);
+        assert!(!info.os.is_empty());
+    }
+
+    #[test]
+    fn test_model_size_recommendations() {
+        let tiny_models = ModelSize::Tiny.recommended_models();
+        assert!(!tiny_models.is_empty());
+        
+        let small_models = ModelSize::Small.recommended_models();
+        assert!(!small_models.is_empty());
+        
+        let medium_models = ModelSize::Medium.recommended_models();
+        assert!(!medium_models.is_empty());
+        
+        let large_models = ModelSize::Large.recommended_models();
+        assert!(!large_models.is_empty());
+        
+        let extra_large_models = ModelSize::ExtraLarge.recommended_models();
+        assert!(!extra_large_models.is_empty());
+    }
+
+    #[test]
+    fn test_calculate_model_size() {
+        // Tiny: < 4GB
+        assert_eq!(SystemInfo::calculate_model_size(2.0, None), ModelSize::Tiny);
+        
+        // Small: 4-10GB
+        assert_eq!(SystemInfo::calculate_model_size(6.0, None), ModelSize::Small);
+        
+        // Medium: 10-20GB
+        assert_eq!(SystemInfo::calculate_model_size(15.0, None), ModelSize::Medium);
+        
+        // Large: 20-36GB
+        assert_eq!(SystemInfo::calculate_model_size(25.0, None), ModelSize::Large);
+        
+        // ExtraLarge: >= 36GB
+        assert_eq!(SystemInfo::calculate_model_size(40.0, None), ModelSize::ExtraLarge);
+    }
+
+    #[test]
+    fn test_format_size() {
+        assert_eq!(format_size(500), "500 B");
+        assert_eq!(format_size(1024), "1.00 KB");
+        assert_eq!(format_size(1024 * 1024), "1.00 MB");
+        assert_eq!(format_size(1024 * 1024 * 1024), "1.00 GB");
+    }
+
+    #[test]
+    fn test_model_recommendation_structure() {
+        let models = ModelSize::Tiny.recommended_models();
+        let model = &models[0];
+        
+        assert!(!model.name.is_empty());
+        assert!(!model.params.is_empty());
+        assert!(model.size_gb > 0.0);
+        assert!(!model.description.is_empty());
+        assert!(!model.hf_repo.is_empty());
     }
 }

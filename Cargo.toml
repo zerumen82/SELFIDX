@@ -21,7 +21,6 @@ serde_json = "1"
 
 # Terminal UI
 crossterm = "0.28"
-tui = "0.19"
 ratatui = "0.24"
 
 # File operations
@@ -36,3 +35,21 @@ url = "2"
 humantime = "2"
 dirs = "5"
 chrono = "0.4"
+
+[package.metadata.bundle]
+name = "SELFIDEX"
+identifier = "com.selfidx.selfidx"
+version = "3.0.0"
+description = "Terminal integrada con Jan.ai - SELFIDEX v3.0"
+copyright = "Copyright (c) 2024 SELFIDEX"
+category = "DeveloperTool"
+short_description = "Terminal con capacidades de IA"
+long_description = """
+SELFIDEX v3.0 es una terminal integrada con capacidades de IA.
+Características:
+- Terminal PowerShell nativa
+- Chat AI con Jan.ai
+- Agente de programación autónomo
+- Navegación y edición de archivos
+- Detección de hardware
+"""

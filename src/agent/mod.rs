@@ -483,3 +483,110 @@ impl Default for Agent {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_agent_new() {
+        let agent = Agent::new();
+        assert!(agent.project_root.exists());
+    }
+
+    #[test]
+    fn test_write_and_read_file() {
+        let agent = Agent::new();
+        let test_path = "test_file.txt";
+        let test_content = "Hello, World!";
+        
+        // Write file
+        let result = agent.write_file(test_path, test_content);
+        assert!(result.is_ok());
+        
+        // Read file
+        let content = agent.read_file(test_path);
+        assert!(content.is_ok());
+        assert_eq!(content.unwrap(), test_content);
+        
+        // Cleanup
+        let _ = fs::remove_file(test_path);
+    }
+
+    #[test]
+    fn test_list_files() {
+        let agent = Agent::new();
+        let result = agent.list_files(".");
+        assert!(result.is_ok());
+        
+        let files = result.unwrap();
+        // Should have at least some files
+        assert!(!files.is_empty());
+    }
+
+    #[test]
+    fn test_execute_command() {
+        let agent = Agent::new();
+        
+        #[cfg(windows)]
+        let result = agent.execute_command("echo test");
+        
+        #[cfg(not(windows))]
+        let result = agent.execute_command("echo test");
+        
+        assert!(result.is_ok());
+        let cmd_result = result.unwrap();
+        assert!(cmd_result.stdout.contains("test") || cmd_result.is_success());
+    }
+
+    #[test]
+    fn test_create_and_delete_directory() {
+        let agent = Agent::new();
+        let test_dir = "test_directory";
+        
+        // Create directory
+        let result = agent.create_directory(test_dir);
+        assert!(result.is_ok());
+        assert!(PathBuf::from(test_dir).exists());
+        
+        // Delete directory
+        let result = agent.delete(test_dir);
+        assert!(result.is_ok());
+        assert!(!PathBuf::from(test_dir).exists());
+    }
+
+    #[test]
+    fn test_get_project_tree() {
+        let agent = Agent::new();
+        let result = agent.get_project_tree(2);
+        assert!(result.is_ok());
+        
+        let tree = result.unwrap();
+        assert!(!tree.is_empty());
+    }
+
+    #[test]
+    fn test_search() {
+        let agent = Agent::new();
+        let result = agent.search("fn", Some("rs"));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_tools_description() {
+        let description = Agent::get_tools_description();
+        assert!(description.contains("read_file"));
+        assert!(description.contains("write_file"));
+        assert!(description.contains("execute_command"));
+    }
+
+    #[test]
+    fn test_is_destructive_tool() {
+        assert!(Agent::is_destructive_tool("delete"));
+        assert!(Agent::is_destructive_tool("write_file"));
+        assert!(!Agent::is_destructive_tool("read_file"));
+        assert!(!Agent::is_destructive_tool("list_files"));
+    }
+}

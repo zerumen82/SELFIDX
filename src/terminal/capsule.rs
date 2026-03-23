@@ -4,10 +4,10 @@
 pub fn render_capsule() -> String {
     r#"
     █████
- ██████████    SELFIDEX v3.0
- ██████████    [●] vLLM Conectado
-    █████
-"#.to_string()
+   ██████████    SELFIDEX v3.0
+   ██████████    [●] Jan.ai Conectado
+     █████
+    "#.to_string()
 }
 
 pub fn render_header() -> String {
@@ -16,9 +16,9 @@ pub fn render_header() -> String {
 
 pub fn render_status(connected: bool) -> String {
     if connected {
-        "[●] vLLM Conectado".to_string()
+        "[●] Jan.ai Conectado".to_string()
     } else {
-        "[○] vLLM Desconectado".to_string()
+        "[○] Jan.ai Desconectado".to_string()
     }
 }
 
