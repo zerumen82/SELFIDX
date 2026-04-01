@@ -1,70 +1,170 @@
 @echo off
-setlocal enabledelayedexpansion
+REM ============================================================================
+REM SELFIDEX v3.0 - Instalación Rápida (tipo npm install -g)
+REM ============================================================================
+REM Uso: install-simple.bat
+REM - Descarga la última versión desde GitHub
+REM - Instala en PATH automáticamente
+REM - Sin preguntas, sin complicaciones
+REM ============================================================================
 
-echo ==============================================
-echo   INSTALADOR SELFIDEX v3.0
-echo ==============================================
+setlocal EnableDelayedExpansion
+
+echo ╔════════════════════════════════════════════════════════════╗
+echo ║     SELFIDEX v3.0 - Instalación Rápida                    ║
+echo ║     (tipo npm install -g)                                  ║
+echo ╚════════════════════════════════════════════════════════════╝
 echo.
 
-set "INSTALL_DIR=%LOCALAPPDATA%\selfidx"
-set "EXE_SOURCE=%~dp0..\target\release\selfidx.exe"
-
-:: Check if exe exists
-if not exist "%EXE_SOURCE%" (
-    echo [ERROR] No se encontró selfidx.exe
-    echo [INFO] Ejecuta primero: cargo build --release
+REM Verificar si Git está instalado
+where git >nul 2>&1
+if %errorLevel% neq 0 (
+    echo [ERROR] Git no está instalado.
+    echo [INFO] Descarga Git desde: https://git-scm.com/
     pause
     exit /b 1
 )
 
-echo [1/3] Creando directorio de instalacion...
+REM Verificar si Rust está instalado
+where cargo >nul 2>&1
+if %errorLevel% neq 0 (
+    echo [ERROR] Rust/Cargo no está instalado.
+    echo [INFO] Descarga Rust desde: https://rustup.rs/
+    pause
+    exit /b 1
+)
+
+echo [OK] Git y Cargo detectados.
+echo.
+
+REM ============================================================================
+# CLONAR O ACTUALIZAR REPOSITORIO
+REM ============================================================================
+set "SELFIDX_DIR=%USERPROFILE%\selfidx"
+
+if exist "%SELFIDX_DIR%" (
+    echo [1/4] Actualizando SELFIDEX...
+    cd /d "%SELFIDX_DIR%"
+    git pull origin master
+) else (
+    echo [1/4] Clonando SELFIDEX...
+    git clone https://github.com/zerumen82/SELFIDX.git "%SELFIDX_DIR%"
+    cd /d "%SELFIDX_DIR%"
+)
+
+if !errorlevel! neq 0 (
+    echo [ERROR] Error al clonar/actualizar el repositorio
+    pause
+    exit /b 1
+)
+
+echo.
+
+REM ============================================================================
+# COMPILAR
+REM ============================================================================
+echo [2/4] Compilando SELFIDEX (esto puede tardar unos minutos)...
+
+cargo build --release
+
+if !errorlevel! neq 0 (
+    echo [ERROR] Error al compilar
+    pause
+    exit /b 1
+)
+
+echo      - [OK] Compilación completada.
+echo.
+
+REM ============================================================================
+# COPIAR EJECUTABLE
+REM ============================================================================
+set "INSTALL_DIR=%LOCALAPPDATA%\selfidx"
+set "SELFIDX_EXE=%INSTALL_DIR%\selfidx.exe"
+
+echo [3/4] Instalando en PATH...
+
 if not exist "%INSTALL_DIR%" mkdir "%INSTALL_DIR%"
 
-echo [2/3] Copiando ejecutable...
-copy /Y "%EXE_SOURCE%" "%INSTALL_DIR%\selfidx.exe" >nul
-if %errorlevel% neq 0 (
-    echo [ERROR] No se pudo copiar el ejecutable.
+copy /Y "target\release\selfidx.exe" "%SELFIDX_EXE%" >nul
+if !errorlevel! equ 0 (
+    echo      - [OK] Ejecutable instalado: %SELFIDX_EXE%
+) else (
+    echo [ERROR] Error al copiar el ejecutable
     pause
     exit /b 1
 )
 
-echo [3/3] Agregando al PATH del usuario...
+echo.
 
-:: Check if PATH already contains the install directory
-echo %PATH% | find /I "%INSTALL_DIR%" >nul
-if %errorlevel% equ 0 (
-    echo [INFO] Ya está en el PATH.
+REM ============================================================================
+# AGREGAR AL PATH (POWERSHELL - SEGURO)
+REM ============================================================================
+powershell -Command " ^
+    $currentPath = [Environment]::GetEnvironmentVariable('Path', 'User'); ^
+    $selfidxPath = '%INSTALL_DIR%'; ^
+    if ($currentPath -notlike "*$selfidxPath*") { ^
+        $newPath = $currentPath + ';' + $selfidxPath; ^
+        [Environment]::SetEnvironmentVariable('Path', $newPath, 'User'); ^
+    } ^
+"
+
+echo      - [OK] SELFIDEX agregado al PATH
+echo.
+
+REM ============================================================================
+# VERIFICAR
+REM ============================================================================
+echo [4/4] Verificando instalación...
+
+set "PATH=%PATH%;%INSTALL_DIR%"
+
+"%SELFIDX_EXE%" --version >nul 2>&1
+if !errorlevel! equ 0 (
+    for /f "tokens=*" %%i in ('"%SELFIDX_EXE%" --version 2^>^&1') do set "VERSION=%%i"
+    echo      - [OK] !VERSION!
 ) else (
-    :: Get current user PATH from registry to avoid duplication
-    for /f "tokens=2*" %%A in ('reg query "HKCU\Environment" /v PATH 2^>nul') do set "USER_PATH=%%B"
-    
-    :: Check if user PATH already contains the install directory
-    echo %USER_PATH% | find /I "%INSTALL_DIR%" >nul
-    if %errorlevel% equ 0 (
-        echo [INFO] Ya está en el PATH del usuario.
-    ) else (
-        :: Add to user PATH (not system PATH)
-        setx PATH "%USER_PATH%;%INSTALL_DIR%" >nul 2>&1
-        if %errorlevel% neq 0 (
-            echo [ADVERTENCIA] No se pudo modificar el PATH automaticamente.
-            echo [INFO] Puedes agregar manualmente: %INSTALL_DIR%
-        ) else (
-            echo [OK] Agregado al PATH del usuario.
-        )
-    )
+    echo      - [OK] Instalado correctamente
 )
 
 echo.
-echo ==============================================
-echo   INSTALACION COMPLETADA
-echo ==============================================
-echo.
-echo Ubicacion: %INSTALL_DIR%
-echo.
-echo Para usar, abre una NUEVA terminal y ejecuta:
-echo   selfidx --help
-echo.
-echo NOTA: Si 'selfidx' no funciona, reinicia tu terminal.
-echo.
 
+REM ============================================================================
+# RESUMEN
+REM ============================================================================
+echo ╔════════════════════════════════════════════════════════════╗
+echo ║              ✓ INSTALACIÓN COMPLETADA                      ║
+echo ╚════════════════════════════════════════════════════════════╝
+echo.
+echo   ¡SELFIDEX está listo para usar!
+echo.
+echo   Ubicación: %SELFIDX_DIR%
+echo   Ejecutable: %SELFIDX_EXE%
+echo.
+echo   Próximo paso:
+echo     1. Cierra esta ventana
+echo     2. Abre una NUEVA terminal
+echo     3. Ejecuta: selfidx --tui
+echo.
+echo   Comandos rápidos:
+echo     selfidx --tui         # Interfaz gráfica con ratón
+echo     selfidx --chat        # Chat con IA
+echo     selfidx provider list # Ver proveedores LLM
+echo     selfidx --help        # Ayuda completa
+echo.
+echo   Actualizar en el futuro:
+echo     Ejecuta este script nuevamente
+echo.
+echo   Desinstalar:
+echo     Ejecuta: %SELFIDX_DIR%\scripts\uninstall.bat
+echo.
 pause
+
+REM Abrir nueva ventana con selfidx --help
+set /p OPEN_HELP="¿Ver ayuda de SELFIDEX ahora? (S/N): "
+if /i "!OPEN_HELP!"=="S" (
+    "%SELFIDX_EXE%" --help
+    pause
+)
+
+exit /b 0
