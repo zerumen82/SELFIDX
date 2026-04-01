@@ -29,6 +29,7 @@ pub enum TuiMessage {
 pub struct TuiApp {
     pub agent: Agent,
     pub llm_client: LlmClient,
+    pub git_manager: Option<crate::git::GitManager>,
     pub files: Vec<FileEntry>,
     pub selected_file: Option<usize>,
     pub file_content: String,
@@ -40,6 +41,7 @@ pub struct TuiApp {
     pub selected_model: usize,
     pub show_provider_selector: bool,
     pub show_model_selector: bool,
+    pub show_git_panel: bool,
     pub providers: Vec<LlmProvider>,
     pub models: Vec<String>,
     pub scroll_offset: usize,
@@ -47,8 +49,10 @@ pub struct TuiApp {
     pub message_tx: Option<Sender<TuiMessage>>,
     pub message_rx: Option<Receiver<TuiMessage>>,
     pub pending_response: bool,
-    pub streaming_buffer: String,  // Buffer para streaming
+    pub streaming_buffer: String,
     pub is_streaming: bool,
+    pub git_status: Option<crate::git::GitStatus>,
+    pub selected_git_file: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -80,6 +84,10 @@ impl TuiApp {
         let files = Self::load_directory(&current_dir);
         let llm_client = LlmClient::from_env();
         
+        // Intentar crear GitManager (puede fallar si no es repo git)
+        let git_manager = crate::git::GitManager::new().ok();
+        let git_status = git_manager.as_ref().and_then(|g| g.status().ok());
+        
         let providers = vec![
             LlmProvider::Ollama,
             LlmProvider::OpenAI,
@@ -104,12 +112,13 @@ impl TuiApp {
         Ok(Self {
             agent,
             llm_client,
+            git_manager,
             files,
             selected_file: None,
             file_content: String::new(),
             messages: vec![ChatMessage {
                 role: "system".to_string(),
-                content: "¡Bienvenido a SELFIDEX v3.0! Presiona H para ayuda.".to_string(),
+                content: "¡Bienvenido a SELFIDEX v3.0! Presiona H para ayuda, G para Git.".to_string(),
                 timestamp: chrono::Local::now().format("%H:%M").to_string(),
             }],
             input_buffer: String::new(),
@@ -119,6 +128,7 @@ impl TuiApp {
             selected_model: 0,
             show_provider_selector: false,
             show_model_selector: false,
+            show_git_panel: false,
             providers,
             models,
             scroll_offset: 0,
@@ -128,6 +138,8 @@ impl TuiApp {
             pending_response: false,
             streaming_buffer: String::new(),
             is_streaming: false,
+            git_status,
+            selected_git_file: None,
         })
     }
 
@@ -554,12 +566,78 @@ fn handle_key_event(app: &mut TuiApp, key: crossterm::event::KeyEvent) -> Result
         KeyCode::Char('p') | KeyCode::Char('P') => {
             app.toggle_provider_selector();
         }
-        
+
         // Cambiar modelo (M)
         KeyCode::Char('m') | KeyCode::Char('M') => {
             app.toggle_model_selector();
         }
-        
+
+        // Panel Git (G)
+        KeyCode::Char('g') | KeyCode::Char('G') => {
+            app.show_git_panel = !app.show_git_panel;
+            // Actualizar estado git al abrir
+            if app.show_git_panel {
+                if let Some(ref git) = app.git_manager {
+                    app.git_status = git.status().ok();
+                }
+            }
+        }
+
+        // Operaciones Git (solo cuando el panel está abierto)
+        KeyCode::Char('a') | KeyCode::Char('A') if app.show_git_panel => {
+            if let Some(ref git) = app.git_manager {
+                match git.add_all() {
+                    Ok(_) => {
+                        app.git_status = git.status().ok();
+                        app.add_message("system", "✓ Todos los archivos agregados al stage");
+                    }
+                    Err(e) => app.add_message("system", &format!("❌ Error: {}", e)),
+                }
+            }
+        }
+
+        KeyCode::Char('r') | KeyCode::Char('R') if app.show_git_panel => {
+            if let Some(ref git) = app.git_manager {
+                app.git_status = git.status().ok();
+                app.add_message("system", "🔄 Estado de Git actualizado");
+            }
+        }
+
+        KeyCode::Char('c') | KeyCode::Char('C') if app.show_git_panel => {
+            // Prompt para mensaje de commit (simplificado)
+            app.add_message("system", "💡 Para commit: usa el chat con 'git commit -m \"mensaje\"'");
+        }
+
+        KeyCode::Char('p') | KeyCode::Char('P') if app.show_git_panel => {
+            let result = if let Some(ref git) = app.git_manager {
+                Some(git.push())
+            } else {
+                None
+            };
+            
+            match result {
+                Some(Ok(output)) => app.add_message("system", &format!("✓ Push completado: {}", output.trim())),
+                Some(Err(e)) => app.add_message("system", &format!("❌ Push error: {}", e)),
+                None => app.add_message("system", "❌ No hay repositorio Git"),
+                _ => {}
+            }
+        }
+
+        KeyCode::Char('l') | KeyCode::Char('L') if app.show_git_panel => {
+            let result = if let Some(ref git) = app.git_manager {
+                Some(git.pull())
+            } else {
+                None
+            };
+            
+            match result {
+                Some(Ok(output)) => app.add_message("system", &format!("✓ Pull completado: {}", output.trim())),
+                Some(Err(e)) => app.add_message("system", &format!("❌ Pull error: {}", e)),
+                None => app.add_message("system", "❌ No hay repositorio Git"),
+                _ => {}
+            }
+        }
+
         // Input de texto
         KeyCode::Char(c) => {
             if !app.show_provider_selector && !app.show_model_selector {
@@ -626,7 +704,7 @@ fn handle_key_event(app: &mut TuiApp, key: crossterm::event::KeyEvent) -> Result
 /// Función de renderizado principal
 fn ui(f: &mut Frame, app: &mut TuiApp) {
     let size = f.size();
-    
+
     // Layout principal
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -640,21 +718,26 @@ fn ui(f: &mut Frame, app: &mut TuiApp) {
 
     // Header
     render_header(f, app, chunks[0]);
-    
+
     // Messages/Chat area
     render_messages(f, app, chunks[1]);
-    
+
     // Input
     render_input(f, app, chunks[2]);
-    
+
     // Files
     render_files(f, app, chunks[3]);
-    
+
+    // Git panel overlay
+    if app.show_git_panel {
+        render_git_panel(f, app);
+    }
+
     // Provider selector overlay
     if app.show_provider_selector {
         render_provider_selector(f, app);
     }
-    
+
     // Model selector overlay
     if app.show_model_selector {
         render_model_selector(f, app);
@@ -777,6 +860,109 @@ fn render_model_selector(f: &mut Frame, app: &TuiApp) {
             .border_style(Style::default().fg(Color::Yellow)));
     
     f.render_widget(selector, area);
+}
+
+/// Renderizar panel Git
+fn render_git_panel(f: &mut Frame, app: &mut TuiApp) {
+    let area = centered_rect(80, 70, f.size());
+    f.render_widget(Clear, area);
+
+    // Crear contenido del panel Git
+    let mut lines = Vec::new();
+
+    // Título
+    lines.push(Line::from(vec![
+        Span::styled("📊 Git Status", Style::default().add_modifier(Modifier::BOLD)),
+    ]));
+    lines.push(Line::from(""));
+
+    if let Some(ref status) = app.git_status {
+        // Rama actual
+        lines.push(Line::from(vec![
+            Span::styled("📍 Branch: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(&status.branch),
+        ]));
+
+        // Ahead/Behind
+        if status.ahead > 0 || status.behind > 0 {
+            lines.push(Line::from(vec![
+                Span::styled(format!("↑{} ↓{}", status.ahead, status.behind), 
+                    Style::default().fg(if status.ahead > 0 { Color::Yellow } else { Color::Green })),
+            ]));
+        }
+
+        lines.push(Line::from(""));
+
+        // Staged files
+        if !status.staged.is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled("✓ Staged:", Style::default().fg(Color::Green)),
+            ]));
+            for file in &status.staged {
+                let icon = match file.status {
+                    crate::git::FileStatus::Added => "+",
+                    crate::git::FileStatus::Modified => "~",
+                    crate::git::FileStatus::Deleted => "-",
+                    _ => "?",
+                };
+                lines.push(Line::from(format!("  {} {}", icon, file.path)));
+            }
+            lines.push(Line::from(""));
+        }
+
+        // Unstaged files
+        if !status.unstaged.is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled("✗ Unstaged:", Style::default().fg(Color::Yellow)),
+            ]));
+            for file in &status.unstaged {
+                let icon = match file.status {
+                    crate::git::FileStatus::Added => "+",
+                    crate::git::FileStatus::Modified => "~",
+                    crate::git::FileStatus::Deleted => "-",
+                    _ => "?",
+                };
+                lines.push(Line::from(format!("  {} {}", icon, file.path)));
+            }
+            lines.push(Line::from(""));
+        }
+
+        // Untracked files
+        if !status.untracked.is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled("? Untracked:", Style::default().fg(Color::DarkGray)),
+            ]));
+            for file in &status.untracked {
+                lines.push(Line::from(format!("  ? {}", file)));
+            }
+        }
+
+        // Estado limpio
+        if status.is_clean {
+            lines.push(Line::from(vec![
+                Span::styled("✓ Working tree clean", Style::default().fg(Color::Green)),
+            ]));
+        }
+    } else {
+        lines.push(Line::from(vec![
+            Span::styled("❌ No es un repositorio Git", Style::default().fg(Color::Red)),
+        ]));
+    }
+
+    // Instrucciones
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("A: Add all | C: Commit | P: Push | L: Pull | R: Refresh | ESC: Cerrar", 
+            Style::default().fg(Color::DarkGray)),
+    ]));
+
+    let panel = Paragraph::new(lines)
+        .block(Block::default()
+            .title(" 📊 Panel Git ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan)));
+
+    f.render_widget(panel, area);
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
