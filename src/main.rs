@@ -228,6 +228,12 @@ enum Commands {
         action: Option<ProviderCommands>,
     },
 
+    /// Gestionar Ollama
+    Ollama {
+        #[command(subcommand)]
+        action: Option<OllamaCommands>,
+    },
+
     /// Ejecutar comando del sistema
     Exec {
         cmd: String,
@@ -383,6 +389,40 @@ enum ProviderCommands {
 
     /// Verificar conectividad
     Check,
+}
+
+/// Comandos de gestión de Ollama
+#[derive(Subcommand, Debug)]
+enum OllamaCommands {
+    /// Verificar estado del servidor
+    Status,
+
+    /// Listar modelos disponibles
+    List,
+
+    /// Descargar modelo
+    Pull {
+        /// Nombre del modelo (ej: llama3, codellama)
+        model: String,
+    },
+
+    /// Eliminar modelo
+    Remove {
+        /// Nombre del modelo
+        model: String,
+    },
+
+    /// Ver información de un modelo
+    Show {
+        /// Nombre del modelo
+        model: String,
+    },
+
+    /// Obtener modelo recomendado para tu hardware
+    Recommend,
+
+    /// Iniciar servidor Ollama
+    Serve,
 }
 
 /// Check if selfidx is in PATH and offer auto-install
@@ -2054,6 +2094,214 @@ Responde en español.",
                     println!("  set <provider>      - Cambiar proveedor (ollama, openai, anthropic, groq, lmstudio)");
                     println!("  models [provider]   - Listar modelos disponibles");
                     println!("  check               - Verificar conectividad");
+                    println!();
+                }
+            }
+        }
+
+        Some(Commands::Ollama { action }) => {
+            use selfidx::{OllamaManager, ollama};
+            
+            let ollama = OllamaManager::from_env();
+            
+            match action {
+                Some(OllamaCommands::Status) => {
+                    println!("\n═══════════════════════════════════════════");
+                    println!("   🦙 ESTADO DE OLLAMA");
+                    println!("═══════════════════════════════════════════\n");
+                    
+                    match ollama.get_server_info().await {
+                        Ok(info) => {
+                            if info.is_running {
+                                println!("✅ Ollama está corriendo en: {}", info.url);
+                                if let Some(version) = info.version {
+                                    println!("   Versión: {}", version);
+                                }
+                                
+                                // Listar modelos
+                                match ollama.list_models().await {
+                                    Ok(models) => {
+                                        println!("\n📦 Modelos instalados: {}", models.len());
+                                        for model in &models {
+                                            println!("   • {} ({})", model.name, model.size);
+                                        }
+                                    }
+                                    Err(e) => println!("⚠️  Error al listar modelos: {}", e),
+                                }
+                            } else {
+                                println!("❌ Ollama NO está corriendo");
+                                println!("\n💡 Para iniciar Ollama:");
+                                println!("   1. Descarga desde: https://ollama.ai");
+                                println!("   2. Ejecuta: ollama serve");
+                                println!("   3. O usa: selfidx ollama serve");
+                            }
+                        }
+                        Err(e) => println!("❌ Error: {}", e),
+                    }
+                    println!();
+                }
+                
+                Some(OllamaCommands::List) => {
+                    println!("\n═══════════════════════════════════════════");
+                    println!("   📦 MODELOS OLLAMA DISPONIBLES");
+                    println!("═══════════════════════════════════════════\n");
+                    
+                    match ollama.list_models().await {
+                        Ok(models) => {
+                            if models.is_empty() {
+                                println!("No hay modelos instalados.");
+                                println!("\n💡 Modelos recomendados para código:");
+                                for model in OllamaManager::get_recommended_models().iter().take(5) {
+                                    println!("   • {}", model);
+                                }
+                                println!("\n   Para instalar: selfidx ollama pull <modelo>");
+                            } else {
+                                println!("{:<30} {:<12} {:<15} {}", "Modelo", "Tamaño", "Familia", "Params");
+                                println!("{}", "─".repeat(75));
+                                
+                                for model in &models {
+                                    println!(
+                                        "{:<30} {:<12} {:<15} {}",
+                                        model.name,
+                                        model.size,
+                                        model.details.family,
+                                        model.details.parameter_size
+                                    );
+                                }
+                            }
+                        }
+                        Err(e) => println!("❌ Error: {}", e),
+                    }
+                    println!();
+                }
+                
+                Some(OllamaCommands::Pull { model }) => {
+                    println!("\n═══════════════════════════════════════════");
+                    println!("   📥 DESCARGANDO MODELO: {}", model.to_uppercase());
+                    println!("═══════════════════════════════════════════\n");
+                    
+                    match ollama.get_or_pull_model(&model).await {
+                        Ok(msg) => {
+                            println!("{}", msg);
+                            
+                            // Verificar si está disponible
+                            if ollama.model_exists(&model).await {
+                                println!("\n✅ Modelo {} listo para usar", model);
+                                println!("   Usa: selfidx --model {}", model);
+                            }
+                        }
+                        Err(e) => println!("❌ Error: {}", e),
+                    }
+                    println!();
+                }
+                
+                Some(OllamaCommands::Remove { model }) => {
+                    println!("\n═══════════════════════════════════════════");
+                    println!("   🗑️  ELIMINANDO MODELO: {}", model.to_uppercase());
+                    println!("═══════════════════════════════════════════\n");
+                    
+                    match ollama.delete_model(&model).await {
+                        Ok(_) => println!("✅ Modelo {} eliminado", model),
+                        Err(e) => println!("❌ Error: {}", e),
+                    }
+                    println!();
+                }
+                
+                Some(OllamaCommands::Show { model }) => {
+                    println!("\n═══════════════════════════════════════════");
+                    println!("   📊 INFORMACIÓN DEL MODELO: {}", model.to_uppercase());
+                    println!("═══════════════════════════════════════════\n");
+                    
+                    match ollama.show_model(&model).await {
+                        Ok(info) => {
+                            println!("Modelo: {}", model);
+                            if let Some(details) = info.get("details") {
+                                println!("Detalles: {:?}", details);
+                            }
+                        }
+                        Err(e) => println!("❌ Error: {}", e),
+                    }
+                    println!();
+                }
+                
+                Some(OllamaCommands::Recommend) => {
+                    println!("\n═══════════════════════════════════════════");
+                    println!("   💡 MODELO RECOMENDADO");
+                    println!("═══════════════════════════════════════════\n");
+                    
+                    let recommended = OllamaManager::recommend_model_for_hardware();
+                    let ram_gb = ollama::get_total_ram_gb();
+                    
+                    println!("Tu sistema tiene: {:.1} GB RAM", ram_gb);
+                    println!();
+                    println!("Modelo recomendado: {}", recommended);
+                    println!();
+                    println!("Otros modelos según tu hardware:");
+                    
+                    if ram_gb >= 64.0 {
+                        println!("  • llama3:70b (máxima calidad)");
+                        println!("  • codellama:34b (código)");
+                        println!("  • mixtral:8x7b (rápido)");
+                    } else if ram_gb >= 32.0 {
+                        println!("  • codellama:34b (código)");
+                        println!("  • llama3 (general)");
+                        println!("  • mistral (rápido)");
+                    } else if ram_gb >= 16.0 {
+                        println!("  • codellama:13b (código)");
+                        println!("  • llama3:8b (general)");
+                        println!("  • mistral:7b (rápido)");
+                    } else {
+                        println!("  • phi3 (ligero)");
+                        println!("  • codellama:7b (código)");
+                        println!("  • tinyllama (muy ligero)");
+                    }
+                    
+                    println!();
+                    println!("💡 Para instalar: selfidx ollama pull {}", recommended);
+                    println!();
+                }
+                
+                Some(OllamaCommands::Serve) => {
+                    println!("\n═══════════════════════════════════════════");
+                    println!("   🚀 INICIANDO OLLAMA SERVER");
+                    println!("═══════════════════════════════════════════\n");
+                    
+                    match OllamaManager::start_server() {
+                        Ok(_) => {
+                            println!("✅ Ollama server iniciado");
+                            println!();
+                            println!("💡 El servidor se está iniciando en segundo plano.");
+                            println!("   Espera unos segundos y verifica con:");
+                            println!("   selfidx ollama status");
+                        }
+                        Err(e) => {
+                            println!("❌ Error al iniciar: {}", e);
+                            println!();
+                            println!("💡 Asegúrate de tener Ollama instalado:");
+                            println!("   https://ollama.ai");
+                        }
+                    }
+                    println!();
+                }
+                
+                None => {
+                    println!("\n═══════════════════════════════════════════");
+                    println!("   🦙 GESTIÓN DE OLLAMA");
+                    println!("═══════════════════════════════════════════\n");
+                    println!("Usa: selfidx ollama <comando>\n");
+                    println!("Comandos disponibles:");
+                    println!("  status              - Verificar estado del servidor");
+                    println!("  list                - Listar modelos instalados");
+                    println!("  pull <modelo>       - Descargar modelo");
+                    println!("  remove <modelo>     - Eliminar modelo");
+                    println!("  show <modelo>       - Ver información de modelo");
+                    println!("  recommend           - Obtener modelo recomendado");
+                    println!("  serve               - Iniciar servidor Ollama");
+                    println!();
+                    println!("Modelos recomendados para código:");
+                    for model in OllamaManager::get_recommended_models().iter().take(5) {
+                        println!("  • {}", model);
+                    }
                     println!();
                 }
             }

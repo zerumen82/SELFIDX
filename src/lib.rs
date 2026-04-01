@@ -11,9 +11,11 @@ pub mod project;
 pub mod permissions;
 pub mod tasks;
 pub mod git;
+pub mod ollama;
 
 pub use terminal::{tui, CommandHistory, HistorySearchState};
 pub use permissions::{PermissionContext, PermissionMode, RiskLevel};
 pub use tasks::{TaskManager, TaskStatus};
 pub use llm::{LlmProvider, ProviderConfig, LlmClient, ProviderInfo, GenerationConfig};
 pub use git::GitManager;
+pub use ollama::OllamaManager;
