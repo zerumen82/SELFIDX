@@ -20,6 +20,7 @@ use crate::terminal::capsule::render_capsule;
 /// Mensajes asíncronos para la TUI
 pub enum TuiMessage {
     LlmResponse(Result<String, anyhow::Error>),
+    LlmChunk(String),  // Chunk de streaming
     ToolResult(String),
     Error(String),
 }
@@ -46,6 +47,8 @@ pub struct TuiApp {
     pub message_tx: Option<Sender<TuiMessage>>,
     pub message_rx: Option<Receiver<TuiMessage>>,
     pub pending_response: bool,
+    pub streaming_buffer: String,  // Buffer para streaming
+    pub is_streaming: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -123,6 +126,8 @@ impl TuiApp {
             message_tx: Some(tx),
             message_rx: Some(rx),
             pending_response: false,
+            streaming_buffer: String::new(),
+            is_streaming: false,
         })
     }
 
@@ -240,8 +245,26 @@ pub fn run_enhanced_tui() -> Result<()> {
         if let Some(rx) = &app.message_rx {
             if let Ok(msg) = rx.try_recv() {
                 match msg {
+                    TuiMessage::LlmChunk(chunk) => {
+                        // Streaming: agregar al buffer y mostrar
+                        app.streaming_buffer.push_str(&chunk);
+                        app.is_streaming = true;
+                        app.set_status(AppStatus::Thinking);
+                        // Actualizar último mensaje con el buffer
+                        if let Some(last) = app.messages.last_mut() {
+                            if last.role == "assistant" && last.content.starts_with("🔄 ") {
+                                last.content = app.streaming_buffer.clone();
+                            }
+                        }
+                    }
                     TuiMessage::LlmResponse(Ok(content)) => {
-                        app.add_message("assistant", &content);
+                        // Respuesta completa (fallback si no hay streaming)
+                        if !app.is_streaming {
+                            app.add_message("assistant", &content);
+                        } else {
+                            // Finalizar streaming
+                            app.is_streaming = false;
+                        }
                         app.set_status(AppStatus::Idle);
                         app.pending_response = false;
                     }
@@ -249,6 +272,7 @@ pub fn run_enhanced_tui() -> Result<()> {
                         app.add_message("system", &format!("❌ Error: {}", e));
                         app.set_status(AppStatus::Error(e.to_string()));
                         app.pending_response = false;
+                        app.is_streaming = false;
                     }
                     TuiMessage::ToolResult(result) => {
                         app.add_message("assistant", &format!("🛠️ Resultado: {}", result));
@@ -257,6 +281,7 @@ pub fn run_enhanced_tui() -> Result<()> {
                         app.add_message("system", &format!("❌ {}", e));
                         app.set_status(AppStatus::Error(e));
                         app.pending_response = false;
+                        app.is_streaming = false;
                     }
                 }
             }
@@ -374,7 +399,7 @@ fn show_file_diff(app: &mut TuiApp, file: &FileEntry) -> Result<()> {
     Ok(())
 }
 
-/// Enviar mensaje al LLM en background
+/// Enviar mensaje al LLM en background con streaming
 fn send_to_llm(app: &mut TuiApp, prompt: &str) -> Result<()> {
     let provider = app.llm_client.provider;
     let endpoint = app.llm_client.endpoint.clone();
@@ -412,6 +437,9 @@ fn send_to_llm(app: &mut TuiApp, prompt: &str) -> Result<()> {
         }];
         messages.extend(recent_messages);
 
+        // Añadir mensaje placeholder para streaming
+        let _ = tx.send(TuiMessage::LlmChunk("🔄 Respondiendo...".to_string()));
+
         // Enviar request
         let result = tokio::runtime::Runtime::new()
             .unwrap()
@@ -421,7 +449,17 @@ fn send_to_llm(app: &mut TuiApp, prompt: &str) -> Result<()> {
 
         match result {
             Ok(response) => {
-                let _ = tx.send(TuiMessage::LlmResponse(Ok(response.content().to_string())));
+                let full_content = response.content().to_string();
+                
+                // Simular streaming carácter por carácter
+                for chunk in full_content.chars() {
+                    let _ = tx.send(TuiMessage::LlmChunk(chunk.to_string()));
+                    // Pequeño delay para simular streaming real
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                
+                // Enviar señal de finalización
+                let _ = tx.send(TuiMessage::LlmResponse(Ok(full_content)));
             }
             Err(e) => {
                 let _ = tx.send(TuiMessage::LlmResponse(Err(e)));
@@ -544,6 +582,15 @@ fn handle_key_event(app: &mut TuiApp, key: crossterm::event::KeyEvent) -> Result
                 app.add_message("user", &input);
                 app.input_buffer.clear();
                 app.cursor_position = 0;
+                
+                // Añadir placeholder para streaming
+                app.messages.push(ChatMessage {
+                    role: "assistant".to_string(),
+                    content: "🔄 Respondiendo...".to_string(),
+                    timestamp: chrono::Local::now().format("%H:%M").to_string(),
+                });
+                app.scroll_offset = app.messages.len();
+                
                 app.set_status(AppStatus::Thinking);
                 app.pending_response = true;
                 
