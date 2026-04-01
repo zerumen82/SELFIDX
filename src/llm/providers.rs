@@ -487,9 +487,142 @@ pub struct ChatRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_tokens: Option<i32>,
+    pub top_p: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_k: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub num_ctx: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub num_predict: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repeat_penalty: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frequency_penalty: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub presence_penalty: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<Tool>>,
+}
+
+/// Configuración de generación optimizada por tipo de tarea
+#[derive(Debug, Clone)]
+pub struct GenerationConfig {
+    pub temperature: f32,
+    pub top_p: f32,
+    pub top_k: i32,
+    pub num_ctx: i32,
+    pub num_predict: i32,
+    pub repeat_penalty: f32,
+    pub frequency_penalty: f32,
+    pub presence_penalty: f32,
+}
+
+impl Default for GenerationConfig {
+    fn default() -> Self {
+        Self::for_coding()
+    }
+}
+
+impl GenerationConfig {
+    /// Detectar tipo de tarea desde el prompt y retornar configuración
+    pub fn from_prompt(prompt: &str) -> Self {
+        let prompt_lower = prompt.to_lowercase();
+        
+        // Análisis de palabras clave
+        if prompt_lower.contains("refactor") || prompt_lower.contains("optimiza") 
+           || prompt_lower.contains("mejora") || prompt_lower.contains("clean") {
+            return Self::for_refactoring();
+        }
+        
+        if prompt_lower.contains("analiza") || prompt_lower.contains("explica")
+           || prompt_lower.contains("describe") || prompt_lower.contains("review") {
+            return Self::for_analysis();
+        }
+        
+        if prompt_lower.contains("test") || prompt_lower.contains("debug")
+           || prompt_lower.contains("fix") || prompt_lower.contains("repara") {
+            return Self::for_testing();
+        }
+        
+        if prompt_lower.contains("crea") || prompt_lower.contains("escribe")
+           || prompt_lower.contains("implementa") || prompt_lower.contains("haz")
+           || prompt_lower.contains("genera") || prompt_lower.contains("build") {
+            return Self::for_coding();
+        }
+        
+        // Default: chat
+        Self::for_chat()
+    }
+
+    /// Configuración óptima para generación de código
+    pub fn for_coding() -> Self {
+        Self {
+            temperature: 0.2,      // Bajo para código determinista
+            top_p: 0.9,
+            top_k: 40,
+            num_ctx: 8192,         // Contexto grande para ver archivos completos
+            num_predict: 2048,
+            repeat_penalty: 1.1,   // Evita código repetitivo
+            frequency_penalty: 0.5,
+            presence_penalty: 0.5,
+        }
+    }
+
+    /// Configuración para chat general
+    pub fn for_chat() -> Self {
+        Self {
+            temperature: 0.7,
+            top_p: 0.9,
+            top_k: 40,
+            num_ctx: 4096,
+            num_predict: 1024,
+            repeat_penalty: 1.0,
+            frequency_penalty: 0.0,
+            presence_penalty: 0.0,
+        }
+    }
+
+    /// Configuración para análisis de código
+    pub fn for_analysis() -> Self {
+        Self {
+            temperature: 0.1,      // Muy bajo para precisión
+            top_p: 0.95,
+            top_k: 50,
+            num_ctx: 16384,        // Contexto máximo para análisis profundo
+            num_predict: 4096,
+            repeat_penalty: 1.0,
+            frequency_penalty: 0.3,
+            presence_penalty: 0.3,
+        }
+    }
+
+    /// Configuración para refactoring
+    pub fn for_refactoring() -> Self {
+        Self {
+            temperature: 0.3,
+            top_p: 0.85,
+            top_k: 40,
+            num_ctx: 8192,
+            num_predict: 2048,
+            repeat_penalty: 1.2,   // Más alto para evitar repetir código viejo
+            frequency_penalty: 0.7,
+            presence_penalty: 0.7,
+        }
+    }
+
+    /// Configuración para testing/debugging
+    pub fn for_testing() -> Self {
+        Self {
+            temperature: 0.2,
+            top_p: 0.9,
+            top_k: 40,
+            num_ctx: 8192,
+            num_predict: 2048,
+            repeat_penalty: 1.1,
+            frequency_penalty: 0.5,
+            presence_penalty: 0.5,
+        }
+    }
 }
 
 impl LlmClient {
@@ -500,12 +633,22 @@ impl LlmClient {
         messages: Vec<Message>,
         tools: Option<Vec<Tool>>,
     ) -> Result<ChatResponse> {
+        // Usar configuración optimizada para coding por defecto
+        self.chat_with_config(model, messages, tools, GenerationConfig::default()).await
+    }
+
+    /// Chat completion con configuración personalizada
+    pub async fn chat_with_config(
+        &self,
+        model: String,
+        messages: Vec<Message>,
+        tools: Option<Vec<Tool>>,
+        config: GenerationConfig,
+    ) -> Result<ChatResponse> {
         // Solo enviar tools si el proveedor los soporta
         let tools_to_send = if self.provider.supports_tools() {
             tools
         } else {
-            // Si no soporta tools, enviar sin ellos
-            // El agente deberá usar formato de texto plano
             None
         };
 
@@ -513,8 +656,14 @@ impl LlmClient {
             model: model.clone(),
             messages,
             stream: false,
-            temperature: Some(0.7),
-            max_tokens: Some(4096), // Más alto para respuestas completas
+            temperature: Some(config.temperature),
+            top_p: Some(config.top_p),
+            top_k: Some(config.top_k),
+            num_ctx: Some(config.num_ctx),
+            num_predict: Some(config.num_predict),
+            repeat_penalty: Some(config.repeat_penalty),
+            frequency_penalty: Some(config.frequency_penalty),
+            presence_penalty: Some(config.presence_penalty),
             tools: tools_to_send,
         };
 

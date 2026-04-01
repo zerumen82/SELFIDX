@@ -14,7 +14,7 @@ use std::io;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Sender, Receiver};
 use crate::agent::Agent;
-use crate::llm::providers::{LlmProvider, LlmClient, Message, Tool};
+use crate::llm::providers::{LlmProvider, LlmClient, Message, Tool, GenerationConfig};
 use crate::terminal::capsule::render_capsule;
 
 /// Mensajes asíncronos para la TUI
@@ -407,6 +407,9 @@ fn send_to_llm(app: &mut TuiApp, prompt: &str) -> Result<()> {
     let model = app.models.get(app.selected_model).cloned().unwrap_or_else(|| "llama3".to_string());
     let tx = app.message_tx.clone().unwrap();
 
+    // Detectar tipo de tarea y obtener configuración óptima
+    let config = GenerationConfig::from_prompt(prompt);
+
     // Crear mensajes del chat (últimos 10 para contexto)
     let recent_messages: Vec<Message> = app.messages
         .iter()
@@ -440,11 +443,11 @@ fn send_to_llm(app: &mut TuiApp, prompt: &str) -> Result<()> {
         // Añadir mensaje placeholder para streaming
         let _ = tx.send(TuiMessage::LlmChunk("🔄 Respondiendo...".to_string()));
 
-        // Enviar request
+        // Enviar request con configuración optimizada
         let result = tokio::runtime::Runtime::new()
             .unwrap()
             .block_on(async {
-                client.chat_with_tools(model, messages, None).await
+                client.chat_with_config(model, messages, None, config).await
             });
 
         match result {
