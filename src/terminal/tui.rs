@@ -45,23 +45,35 @@ impl TuiApp {
     fn load_directory(path: &PathBuf) -> Vec<FileEntry> {
         let mut entries = Vec::new();
         
-        if let Ok(dir) = std::fs::read_dir(path) {
-            for entry in dir.filter_map(|e| e.ok()) {
-                let path = entry.path();
-                let name = entry.file_name().to_string_lossy().to_string();
-                
-                if name.starts_with('.') {
-                    continue;
+        // Protected directory reading
+        match std::fs::read_dir(path) {
+            Ok(dir) => {
+                for entry in dir.filter_map(|e| e.ok()) {
+                    let path = entry.path();
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    
+                    // Skip hidden files and system files
+                    if name.starts_with('.') || name.starts_with('$') {
+                        continue;
+                    }
+                    
+                    // Check if we can access the file metadata
+                    if let Ok(metadata) = entry.metadata() {
+                        entries.push(FileEntry {
+                            name,
+                            path: path.clone(),
+                            is_dir: metadata.is_dir(),
+                        });
+                    }
                 }
-                
-                entries.push(FileEntry {
-                    name,
-                    path: path.clone(),
-                    is_dir: path.is_dir(),
-                });
+            }
+            Err(_) => {
+                // If we can't read the directory, return empty list
+                return entries;
             }
         }
         
+        // Sort entries safely
         entries.sort_by(|a, b| {
             match (a.is_dir, b.is_dir) {
                 (true, false) => std::cmp::Ordering::Less,
@@ -74,7 +86,14 @@ impl TuiApp {
     }
     
     pub fn refresh_directory(&mut self) {
+        // Protected directory refresh
         self.files = Self::load_directory(&self.agent.project_root);
+        // Reset selection if files changed
+        if let Some(idx) = self.selected_file {
+            if idx >= self.files.len() {
+                self.selected_file = None;
+            }
+        }
     }
     
     pub fn select_file(&mut self, index: usize) {
@@ -85,23 +104,37 @@ impl TuiApp {
             let is_dir = file.is_dir;
             
             if is_dir {
-                // Change to directory using agent
-                if std::env::set_current_dir(&path).is_ok() {
-                    self.agent.project_root = path;
-                    self.refresh_directory();
-                    self.selected_file = None;
-                    self.terminal_output.push(format!(" cd {}", name));
+                // Change to directory using agent with error protection
+                match std::env::set_current_dir(&path) {
+                    Ok(_) => {
+                        self.agent.project_root = path;
+                        self.refresh_directory();
+                        self.selected_file = None;
+                        self.terminal_output.push(format!(" cd {}", name));
+                    }
+                    Err(e) => {
+                        self.terminal_output.push(format!("Error: No se pudo acceder al directorio {}: {}", name, e));
+                    }
                 }
             } else {
                 self.selected_file = Some(index);
-                // Read file using agent
+                // Read file using agent with better error handling
                 match self.agent.read_file(&name) {
                     Ok(content) => {
-                        self.file_content = content;
-                        self.terminal_output.push(format!("Opened: {}", name));
+                        // Limit content size to prevent UI issues
+                        let max_size = 50000; // 50KB limit
+                        if content.len() > max_size {
+                            self.file_content = format!("{}...\n\n[Archivo truncado - {} bytes totales]", 
+                                &content[..max_size], content.len());
+                            self.terminal_output.push(format!("Opened: {} (truncado)", name));
+                        } else {
+                            self.file_content = content;
+                            self.terminal_output.push(format!("Opened: {}", name));
+                        }
                     }
                     Err(e) => {
-                        self.file_content = format!("[Error: {}]", e);
+                        self.file_content = format!("[Error al leer archivo: {}]", e);
+                        self.terminal_output.push(format!("Error leyendo: {}", name));
                     }
                 }
             }
@@ -110,16 +143,24 @@ impl TuiApp {
     
     pub fn go_up(&mut self) {
         if let Some(parent) = self.agent.project_root.parent() {
-            if std::env::set_current_dir(parent).is_ok() {
-                self.agent.project_root = parent.to_path_buf();
-                self.refresh_directory();
-                self.selected_file = None;
-                self.terminal_output.push(" cd ..".to_string());
+            match std::env::set_current_dir(parent) {
+                Ok(_) => {
+                    self.agent.project_root = parent.to_path_buf();
+                    self.refresh_directory();
+                    self.selected_file = None;
+                    self.terminal_output.push(" cd ..".to_string());
+                }
+                Err(e) => {
+                    self.terminal_output.push(format!("Error: No se pudo acceder al directorio padre: {}", e));
+                }
             }
+        } else {
+            self.terminal_output.push("Error: Ya está en el directorio raíz".to_string());
         }
     }
     
     pub fn execute_command(&mut self, cmd: &str) {
+        // Protected command execution
         match self.agent.execute_command(cmd) {
             Ok(result) => {
                 if !result.stdout.is_empty() {
@@ -131,7 +172,7 @@ impl TuiApp {
                 }
             }
             Err(e) => {
-                self.terminal_output.push(format!("Error: {}", e));
+                self.terminal_output.push(format!("Error ejecutando comando: {}", e));
             }
         }
     }
@@ -149,7 +190,8 @@ pub fn run_tui() -> Result<()> {
     let mut app = TuiApp::new();
     
     loop {
-        terminal.draw(|f| {
+        // Protected render with error handling
+        if let Err(_) = terminal.draw(|f| {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Length(3), Constraint::Min(0)])
@@ -162,7 +204,7 @@ pub fn run_tui() -> Result<()> {
             
             let main = Layout::default()
                 .direction(Direction::Horizontal)
-                .constraints([Constraint::Percentage(20), Constraint::Percentage(45), Constraint::Percentage(35)])
+                .constraints([Constraint::Min(20), Constraint::Min(30), Constraint::Min(20)])
                 .split(chunks[1]);
             
             // File list
@@ -180,9 +222,10 @@ pub fn run_tui() -> Result<()> {
                 .block(Block::default().borders(Borders::ALL).title(" ARCHIVOS ").border_style(Style::default().fg(Color::Green)));
             f.render_widget(list, main[0]);
             
-            // Editor
+            // Editor - with scroll support for large content
             let editor = Paragraph::new(app.file_content.as_str())
-                .block(Block::default().borders(Borders::ALL).title(" EDITOR ").border_style(Style::default().fg(Color::Green)));
+                .block(Block::default().borders(Borders::ALL).title(" EDITOR ").border_style(Style::default().fg(Color::Green)))
+                .wrap(ratatui::widgets::Wrap { trim: false });
             f.render_widget(editor, main[1]);
             
             // Terminal
@@ -190,28 +233,57 @@ pub fn run_tui() -> Result<()> {
             let term = Paragraph::new(term_output.as_str())
                 .block(Block::default().borders(Borders::ALL).title(" TERMINAL ").border_style(Style::default().fg(Color::Green)));
             f.render_widget(term, main[2]);
-        })?;
+        }) {
+            // If render fails, continue without crashing
+            continue;
+        }
         
-        if let Ok(crossterm::event::Event::Key(key)) = crossterm::event::read() {
-            match key.code {
-                    crossterm::event::KeyCode::Esc => break,
-                    crossterm::event::KeyCode::Up => {
-                        if let Some(idx) = app.selected_file {
-                            if idx > 0 { app.select_file(idx - 1); }
-                        } else if !app.files.is_empty() { app.select_file(0); }
+        // Handle events with error protection
+        match crossterm::event::poll(std::time::Duration::from_millis(100)) {
+            Ok(true) => {
+                if let Ok(event) = crossterm::event::read() {
+                    if let crossterm::event::Event::Key(key) = event {
+                        // Protected key handling
+                        match key.code {
+                            crossterm::event::KeyCode::Esc => break,
+                            crossterm::event::KeyCode::Up => {
+                                if let Some(idx) = app.selected_file {
+                                    if idx > 0 { 
+                                        app.select_file(idx - 1); 
+                                    }
+                                } else if !app.files.is_empty() { 
+                                    app.select_file(0); 
+                                }
+                            }
+                            crossterm::event::KeyCode::Down => {
+                                if let Some(idx) = app.selected_file {
+                                    if idx < app.files.len().saturating_sub(1) { 
+                                        app.select_file(idx + 1); 
+                                    }
+                                } else if !app.files.is_empty() { 
+                                    app.select_file(0); 
+                                }
+                            }
+                            crossterm::event::KeyCode::Enter => {
+                                if let Some(idx) = app.selected_file { 
+                                    app.select_file(idx); 
+                                } else if !app.files.is_empty() { 
+                                    app.select_file(0); 
+                                }
+                            }
+                            crossterm::event::KeyCode::Backspace => app.go_up(),
+                            _ => {}
+                        }
                     }
-                    crossterm::event::KeyCode::Down => {
-                        if let Some(idx) = app.selected_file {
-                            if idx < app.files.len() - 1 { app.select_file(idx + 1); }
-                        } else if !app.files.is_empty() { app.select_file(0); }
-                    }
-                    crossterm::event::KeyCode::Enter => {
-                        if let Some(idx) = app.selected_file { app.select_file(idx); }
-                        else if !app.files.is_empty() { app.select_file(0); }
-                    }
-                    crossterm::event::KeyCode::Backspace => app.go_up(),
-                    _ => {}
                 }
+            }
+            Ok(false) => {
+                // No event available, continue
+            }
+            Err(_) => {
+                // Error reading event, continue without crashing
+                continue;
+            }
         }
     }
     

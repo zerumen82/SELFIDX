@@ -29,16 +29,28 @@ if %errorlevel% neq 0 (
 )
 
 echo [3/3] Agregando al PATH del usuario...
+
+:: Check if PATH already contains the install directory
 echo %PATH% | find /I "%INSTALL_DIR%" >nul
 if %errorlevel% equ 0 (
     echo [INFO] Ya está en el PATH.
 ) else (
-    setx PATH "%PATH%;%INSTALL_DIR%" >nul 2>&1
-    if %errorlevel% neq 0 (
-        echo [ADVERTENCIA] No se pudo modificar el PATH automaticamente.
-        echo [INFO] Puedes agregar manualmente: %INSTALL_DIR%
+    :: Get current user PATH from registry to avoid duplication
+    for /f "tokens=2*" %%A in ('reg query "HKCU\Environment" /v PATH 2^>nul') do set "USER_PATH=%%B"
+    
+    :: Check if user PATH already contains the install directory
+    echo %USER_PATH% | find /I "%INSTALL_DIR%" >nul
+    if %errorlevel% equ 0 (
+        echo [INFO] Ya está en el PATH del usuario.
     ) else (
-        echo [OK] Agregado al PATH del usuario.
+        :: Add to user PATH (not system PATH)
+        setx PATH "%USER_PATH%;%INSTALL_DIR%" >nul 2>&1
+        if %errorlevel% neq 0 (
+            echo [ADVERTENCIA] No se pudo modificar el PATH automaticamente.
+            echo [INFO] Puedes agregar manualmente: %INSTALL_DIR%
+        ) else (
+            echo [OK] Agregado al PATH del usuario.
+        )
     )
 )
 

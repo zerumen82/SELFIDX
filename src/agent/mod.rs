@@ -5,18 +5,34 @@ use anyhow::Result;
 use std::path::PathBuf;
 use std::process::Command;
 use serde::{Deserialize, Serialize};
+use crate::permissions::{PermissionContext, RiskLevel};
 
 /// Agent capabilities for file operations and command execution
 pub struct Agent {
     pub project_root: PathBuf,
+    pub permission_context: PermissionContext,
 }
 
 impl Agent {
     pub fn new() -> Self {
         let project_root = std::env::current_dir()
             .unwrap_or_else(|_| PathBuf::from("."));
-        
-        Self { project_root }
+
+        Self { 
+            project_root,
+            permission_context: PermissionContext::default(),
+        }
+    }
+
+    /// Crear agente con contexto de permisos personalizado
+    pub fn with_permissions(permission_context: PermissionContext) -> Self {
+        let project_root = std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."));
+
+        Self { 
+            project_root,
+            permission_context,
+        }
     }
 
     /// Read a file and return its contents
@@ -57,24 +73,70 @@ impl Agent {
         Ok(files)
     }
 
-    /// Execute a command in the shell
+    /// Execute a command in the shell - detecta SO y valida comandos
     pub fn execute_command(&self, cmd: &str) -> Result<CommandResult> {
+        // Validar que el comando no esté vacío
+        let cmd = cmd.trim();
+        if cmd.is_empty() {
+            anyhow::bail!("Comando vacío");
+        }
+
+        // Verificar permisos
+        let decision = self.permission_context.can_auto_execute("execute_command", cmd);
+        
+        if decision.is_denied() {
+            anyhow::bail!("Comando denegado por permisos: {}", decision.reason());
+        }
+
+        // Detectar sistema operativo y ejecutar comando apropiado
         #[cfg(windows)]
         {
-            let output = Command::new("cmd")
-                .args(["/C", cmd])
+            // En Windows, usar PowerShell
+            let output = Command::new("powershell.exe")
+                .args(["-NoProfile", "-Command", cmd])
                 .current_dir(&self.project_root)
                 .output()?;
-            
+
             Ok(CommandResult {
                 stdout: String::from_utf8_lossy(&output.stdout).to_string(),
                 stderr: String::from_utf8_lossy(&output.stderr).to_string(),
                 exit_code: output.status.code().unwrap_or(-1),
             })
         }
-        
-        #[cfg(not(windows))]
+
+        #[cfg(target_os = "macos")]
         {
+            // En macOS, usar zsh (shell por defecto)
+            let output = Command::new("zsh")
+                .args(["-c", cmd])
+                .current_dir(&self.project_root)
+                .output()?;
+
+            Ok(CommandResult {
+                stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+                stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+                exit_code: output.status.code().unwrap_or(-1),
+            })
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            // En Linux, usar bash
+            let output = Command::new("bash")
+                .args(["-c", cmd])
+                .current_dir(&self.project_root)
+                .output()?;
+
+            Ok(CommandResult {
+                stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+                stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+                exit_code: output.status.code().unwrap_or(-1),
+            })
+        }
+
+        #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+        {
+            // Fallback para otros sistemas
             let output = Command::new("sh")
                 .args(["-c", cmd])
                 .current_dir(&self.project_root)
@@ -450,31 +512,72 @@ impl Agent {
         matches!(tool_name, "delete" | "write_file")
     }
 
-    /// Execute tool with user confirmation for destructive actions
+    /// Execute tool with permission check and user confirmation for destructive actions
     pub fn execute_tool_with_confirmation(
         &self,
         tool_name: &str,
         params: &serde_json::Value,
     ) -> Result<(String, bool)> {
-        let is_destructive = Self::is_destructive_tool(tool_name);
+        // Obtener input para verificar permisos
+        let input_for_check = match tool_name {
+            "execute_command" => params["command"].as_str().unwrap_or("").to_string(),
+            "write_file" => params["path"].as_str().unwrap_or("").to_string(),
+            "delete" => params["path"].as_str().unwrap_or("").to_string(),
+            "read_file" => params["path"].as_str().unwrap_or("").to_string(),
+            _ => String::new(),
+        };
+
+        // Verificar permisos
+        let decision = self.permission_context.can_auto_execute(tool_name, &input_for_check);
         
-        if is_destructive {
-            let path = params["path"].as_str().unwrap_or("unknown");
-            println!("\n⚠️  ACCIÓN DESTRUCTIVA DETECTADA");
+        if decision.is_denied() {
+            return Ok((format!("❌ Herramienta denegada: {}", decision.reason()), false));
+        }
+
+        // Si necesita confirmación y es modo default/auto, preguntar al usuario
+        if decision.needs_confirmation() {
+            let risk_level = decision.risk_level().unwrap_or(RiskLevel::Medium);
+            let path = params["path"].as_str().or_else(|| params["command"].as_str()).unwrap_or("unknown");
+            
+            println!("\n{} REQUERIR CONFIRMACIÓN - Riesgo: {}", risk_level.symbol(), risk_level.display());
             println!("   Herramienta: {}", tool_name);
             println!("   Objetivo: {}", path);
+            println!("   Razón: {}", decision.reason());
             println!("\n¿Confirmar ejecución? (s/n): ");
-            
+
             let mut input = String::new();
             std::io::stdin().read_line(&mut input)?;
-            
+
             if input.trim().to_lowercase() != "s" {
                 return Ok(("Acción cancelada por el usuario".to_string(), false));
             }
         }
-        
+
         let result = self.execute_tool(tool_name, params)?;
         Ok((result, true))
+    }
+
+    /// Obtener información de permisos
+    pub fn get_permission_info(&self) -> String {
+        let mut info = String::new();
+        info.push_str(&format!("Modo: {} {}\n", self.permission_context.get_mode().symbol(), self.permission_context.get_mode()));
+        info.push_str(&format!("Reglas: {}\n", self.permission_context.get_rules().len()));
+        
+        for rule in self.permission_context.get_rules() {
+            info.push_str(&format!(
+                "  [{}] {} {} ({})\n",
+                match rule.behavior {
+                    crate::permissions::PermissionBehavior::Allow => "✓",
+                    crate::permissions::PermissionBehavior::Deny => "✗",
+                    crate::permissions::PermissionBehavior::Ask => "?",
+                },
+                rule.value.tool_name,
+                rule.value.pattern,
+                rule.source
+            ));
+        }
+        
+        info
     }
 }
 
@@ -528,15 +631,20 @@ mod tests {
 
     #[test]
     fn test_execute_command() {
-        let agent = Agent::new();
+        // Crear agente con permisos bypass para tests
+        use crate::permissions::{PermissionContext, PermissionMode};
+        let mut ctx = PermissionContext::default();
+        ctx.set_mode(PermissionMode::Bypass).ok();
         
+        let agent = Agent::with_permissions(ctx);
+
         #[cfg(windows)]
         let result = agent.execute_command("echo test");
-        
+
         #[cfg(not(windows))]
         let result = agent.execute_command("echo test");
-        
-        assert!(result.is_ok());
+
+        assert!(result.is_ok(), "Comando debería ejecutarse: {:?}", result);
         let cmd_result = result.unwrap();
         assert!(cmd_result.stdout.contains("test") || cmd_result.is_success());
     }

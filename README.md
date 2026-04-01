@@ -1,12 +1,12 @@
 # SELFIDEX v3.0
 
-**Terminal integrada con Jan.ai** - Una terminal PowerShell moderna con capacidades de IA.
+**Terminal integrada con Ollama** - Una terminal PowerShell moderna con capacidades de IA.
 
 ## 🎯 Características
 
 - **Terminal Integrada**: PowerShell nativo con renderizado enriquecido
 - **Cápsula Visible**: Diseño minimalista con cápsula SELFIDEX
-- **Jan.ai Integration**: Chat AI con modelos locales (puerto 1337)
+- **Ollama Integration**: Chat AI con modelos locales (puerto 11434)
 - **Agente IA**: Asistente de programación en español
 - **Navegación Bidireccional**: UI y terminal sincronizadas
 - **Instalación en PATH**: Comando `selfidx` global
@@ -58,7 +58,7 @@ selfidx --diff file1.txt file2.txt
 ```
     █████
  ██████████    SELFIDEX v3.0
- ██████████    [●] Jan.ai Conectado
+ ██████████    [●] Ollama Conectado
     █████
 ```
 
@@ -78,16 +78,18 @@ selfidx --diff file1.txt file2.txt
 ### Variables de Entorno
 
 ```bash
-JAN_AI_BASE_URL=http://localhost:1337/v1  # Puerto de Jan.ai (por defecto: 1337)
-JAN_AI_MODEL=llama2                        # Modelo por defecto
+OLLAMA_BASE_URL=http://localhost:11434/v1  # Puerto de Ollama (por defecto: 11434)
+OLLAMA_MODEL=llama3                        # Modelo por defecto
 ```
 
-### Modelos Jan.ai
+### Modelos Ollama
 
-Modelos recomendados para Jan.ai:
-- `TinyLlama/TinyLlama-1.1B-Chat-v1.0`
-- `TheBloke/Llama-2-7B-Chat-GGUF`
-- `TheBloke/Mistral-7B-v0.1-GGUF`
+Modelos recomendados para Ollama:
+- `llama3` - Meta Llama 3 (8B)
+- `llama3:70b` - Meta Llama 3 (70B)
+- `codellama` - Code Llama (7B-34B)
+- `mistral` - Mistral 7B
+- `phi3` - Microsoft Phi-3 (3.8B)
 
 ## 📁 Estructura
 
@@ -97,7 +99,7 @@ selfidx/
 │   ├── cli/           # Entry point y argumentos
 │   ├── terminal/       # Cápsula y terminal emulator
 │   ├── shell/          # PowerShell integration
-│   ├── llm/           # Jan.ai client
+│   ├── llm/           # Ollama client
 │   └── utils/         # Utilidades
 ├── assets/            # Recursos
 └── scripts/           # Scripts de instalación
@@ -202,4 +204,4 @@ MIT License
 
 ---
 
-**SELFIDEX v3.0** - Terminal Integrada con Jan.ai
+**SELFIDEX v3.0** - Terminal Integrada con Ollama

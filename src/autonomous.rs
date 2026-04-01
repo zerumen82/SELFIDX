@@ -1,142 +1,164 @@
-// Autonomous agent module - Claude Code style
+// Autonomous agent module - estilo Codex fluido
 
 use anyhow::Result;
-use crate::llm::{Message, JanClient};
+use crate::llm::{Message, OllamaClient};
 use crate::agent::Agent;
 
-/// Run autonomous loop with tools and confirmation
+/// Ejecutar modo autónomo con interacción fluida estilo Codex
 pub async fn run_autonomous_loop(
-     client: &JanClient,
+     client: &OllamaClient,
      model: &str,
      agent: &Agent,
      initial_prompt: &str,
  ) -> Result<()> {
-    let max_iterations = 10;
+    let max_iterations = 15;
+    
+    // Prompt del sistema simplificado y directo
+    let system_prompt = format!(
+        r#"Eres un asistente de programación autónomo especializado en proyectos Flutter y Android. Ejecuta tareas directamente usando las herramientas disponibles.
+
+REGLAS:
+1. Ejecuta acciones inmediatamente cuando sea claro qué hacer
+2. Si necesitas aclaración, pregunta brevemente
+3. Usa las herramientas para leer, escribir archivos y ejecutar comandos
+4. Cuando termines, indica que la tarea está completa
+5. Analiza el contexto del proyecto antes de actuar
+
+HERRAMIENTAS:
+{}"#,
+        Agent::get_tools_description()
+    );
+
     let mut messages: Vec<Message> = vec![
         Message {
             role: "system".to_string(),
-            content: format!(
-                r#"Eres un asistente de programación AUTÓNOMO estilo Claude Code. Tu objetivo es completar las tareas del usuario de forma independiente.
-
-INSTRUCCIONES IMPORTANTES:
-1. Cuando el usuario dé instrucciones vagas, PRIMERO pregúntale para aclarar antes de actuar
-2. Si no entiendes algo, PREGUNTA en lugar de asumir
-3. Usa las herramientas solo cuando tengas claro qué hacer
-4. Cuando la tarea esté completa, escribe [DONE]
-
-HERRAMIENTAS DISPONIBLES:
-{}
-
-EJEMPLO DE USO:
-- Usuario: "haz algo" → Tú: "¿Qué te gustaría que hiciera exactamente?"
-- Usuario: "crea un archivo" → Tú: "¿Cómo se llama el archivo y qué contenido debe tener?"
-
-Responde siempre en español de forma clara y útil."#,
-                Agent::get_tools_description()
-            ),
+            content: system_prompt,
+            tool_calls: None,
         },
         Message {
             role: "user".to_string(),
             content: initial_prompt.to_string(),
+            tool_calls: None,
         },
     ];
 
     println!("\n═══════════════════════════════════════════");
-    println!("   🤖 MODO AUTÓNOMO - CLAUDE CODE STYLE");
+    println!("   🤖 MODO AUTÓNOMO");
     println!("═══════════════════════════════════════════\n");
 
     for iteration in 0..max_iterations {
-        println!("[Iteración {}] Consultando IA...", iteration + 1);
+        println!("[{}] Procesando...", iteration + 1);
 
-        match client.chat(model.to_string(), messages.clone()).await {
+        // Convert agent tools to Ollama format
+        let ollama_tools = Some(OllamaClient::convert_agent_tools_to_ollama(Agent::get_tools()));
+
+        match client.chat_with_tools(model.to_string(), messages.clone(), ollama_tools).await {
             Ok(response) => {
+                // Check if response has tool calls from Ollama
+                if let Some(tool_calls) = response.tool_calls() {
+                    println!("→ Ollama solicitó {} herramienta(s)", tool_calls.len());
+                    
+                    for tool_call in tool_calls {
+                        let tool_name = &tool_call.function.name;
+                        let params: serde_json::Value = serde_json::from_str(&tool_call.function.arguments)
+                            .unwrap_or(serde_json::json!({}));
+                        
+                        println!("→ Ejecutando: {} {:?}", tool_name, params);
+
+                        let result = if Agent::is_destructive_tool(tool_name) {
+                            let (result, confirmed) = agent.execute_tool_with_confirmation(tool_name, &params)?;
+                            if !confirmed {
+                                messages.push(Message {
+                                    role: "user".to_string(),
+                                    content: "Acción cancelada. Continúa con otra tarea.".to_string(),
+                                    tool_calls: None,
+                                });
+                                continue;
+                            }
+                            result
+                        } else {
+                            agent.execute_tool(tool_name, &params)?
+                        };
+
+                        // Add tool result to messages
+                        messages.push(Message {
+                            role: "tool".to_string(),
+                            content: result,
+                            tool_calls: None,
+                        });
+                    }
+                    
+                    // Continue conversation with tool results
+                    continue;
+                }
+
                 let content = response.content();
 
-                if content.contains("[DONE]") {
-                    let final_content = content.replace("[DONE]", "");
-                    println!("\n=== RESULTADO FINAL ===\n");
-                    println!("{}", final_content.trim());
+                // Verificar si la tarea está completa
+                if content.contains("[DONE]") || content.contains("tarea completada") || content.contains("listo") {
+                    println!("\n✓ Tarea completada\n");
                     break;
                 }
 
-                if content.contains("[TOOL:") {
-                    println!("\n=== HERRAMIENTAS DETECTADAS ===\n");
+                // Fallback: Detectar y ejecutar herramientas desde texto (legacy)
+                let tool_calls = parse_tool_calls(content);
+                
+                if !tool_calls.is_empty() {
+                    for (tool_name, params) in &tool_calls {
+                        println!("→ {} {:?}", tool_name, params);
 
-                    let tool_calls = parse_tool_calls(content);
+                        let result = if Agent::is_destructive_tool(tool_name) {
+                            let (result, confirmed) = agent.execute_tool_with_confirmation(tool_name, params)?;
+                            if !confirmed {
+                                messages.push(Message {
+                                    role: "user".to_string(),
+                                    content: "Acción cancelada. Continúa con otra tarea.".to_string(),
+                                    tool_calls: None,
+                                });
+                                continue;
+                            }
+                            result
+                        } else {
+                            agent.execute_tool(tool_name, params)?
+                        };
 
-                    if tool_calls.is_empty() {
-                        println!("{}", content);
-
-                        println!("\n¿Continuar? (s/n): ");
-                        let mut input = String::new();
-                        std::io::stdin().read_line(&mut input)?;
-                        if input.trim().to_lowercase() != "s" {
-                            break;
-                        }
-                    } else {
-                        for (tool_name, params) in &tool_calls {
-                            println!("→ Ejecutando: {} {:?}", tool_name, params);
-
-                            let result = if Agent::is_destructive_tool(tool_name) {
-                                let (result, confirmed) = agent.execute_tool_with_confirmation(tool_name, params)?;
-                                if !confirmed {
-                                    println!("→ Acción cancelada");
-                                    messages.push(Message {
-                                        role: "assistant".to_string(),
-                                        content: content.to_string(),
-                                    });
-                                    messages.push(Message {
-                                        role: "user".to_string(),
-                                        content: "La acción fue cancelada por el usuario. Continúa sin ejecutar esa acción.".to_string(),
-                                    });
-                                    continue;
-                                }
-                                result
-                            } else {
-                                agent.execute_tool(tool_name, params)?
-                            };
-
-                            println!("→ Resultado: {}\n", result);
-
-                            messages.push(Message {
-                                role: "assistant".to_string(),
-                                content: content.to_string(),
-                            });
-                            messages.push(Message {
-                                role: "system".to_string(),
-                                content: format!("Resultado de {}: {}", tool_name, result),
-                            });
-                        }
+                        // Agregar resultado al contexto
+                        messages.push(Message {
+                            role: "assistant".to_string(),
+                            content: content.to_string(),
+                            tool_calls: None,
+                        });
+                        messages.push(Message {
+                            role: "user".to_string(),
+                            content: format!("Resultado: {}", result),
+                            tool_calls: None,
+                        });
                     }
                 } else {
+                    // Respuesta sin herramientas - mostrar y continuar
                     println!("{}", content);
-
-                    println!("\n¿Continuar? (s/n): ");
-                    let mut input = String::new();
-                    std::io::stdin().read_line(&mut input)?;
-                    if input.trim().to_lowercase() != "s" {
-                        break;
-                    }
-
+                    
                     messages.push(Message {
                         role: "assistant".to_string(),
                         content: content.to_string(),
+                        tool_calls: None,
                     });
                     messages.push(Message {
                         role: "user".to_string(),
-                        content: "Continúa con la siguiente acción o responde que has terminado.".to_string(),
+                        content: "Continúa.".to_string(),
+                        tool_calls: None,
                     });
                 }
             }
             Err(e) => {
-                println!("[selfidx-error] Error: {}", e);
+                println!("Error: {}", e);
                 break;
             }
         }
     }
 
     println!("\n═══════════════════════════════════════════");
-    println!("✓ Modo autónomo finalizado");
+    println!("✓ Finalizado");
     println!("═══════════════════════════════════════════");
 
     Ok(())
@@ -145,7 +167,6 @@ Responde siempre en español de forma clara y útil."#,
 /// Parse tool calls from AI response
 fn parse_tool_calls(content: &str) -> Vec<(String, serde_json::Value)> {
     let mut tool_calls = Vec::new();
-
     let mut lines = content.lines().peekable();
 
     while let Some(line) = lines.next() {
