@@ -12,9 +12,17 @@ use ratatui::{
 };
 use std::io;
 use std::path::PathBuf;
+use std::sync::mpsc::{self, Sender, Receiver};
 use crate::agent::Agent;
-use crate::llm::{LlmProvider, LlmClient};
+use crate::llm::providers::{LlmProvider, LlmClient, Message, Tool};
 use crate::terminal::capsule::render_capsule;
+
+/// Mensajes asíncronos para la TUI
+pub enum TuiMessage {
+    LlmResponse(Result<String, anyhow::Error>),
+    ToolResult(String),
+    Error(String),
+}
 
 /// Aplicación TUI principal
 pub struct TuiApp {
@@ -35,6 +43,9 @@ pub struct TuiApp {
     pub models: Vec<String>,
     pub scroll_offset: usize,
     pub status: AppStatus,
+    pub message_tx: Option<Sender<TuiMessage>>,
+    pub message_rx: Option<Receiver<TuiMessage>>,
+    pub pending_response: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -84,6 +95,9 @@ impl TuiApp {
             .map(|s| s.to_string())
             .collect();
 
+        // Crear canal para mensajes
+        let (tx, rx) = mpsc::channel();
+
         Ok(Self {
             agent,
             llm_client,
@@ -92,7 +106,7 @@ impl TuiApp {
             file_content: String::new(),
             messages: vec![ChatMessage {
                 role: "system".to_string(),
-                content: "¡Bienvenido a SELFIDEX v3.0! Presiona F1 para ayuda.".to_string(),
+                content: "¡Bienvenido a SELFIDEX v3.0! Presiona H para ayuda.".to_string(),
                 timestamp: chrono::Local::now().format("%H:%M").to_string(),
             }],
             input_buffer: String::new(),
@@ -106,6 +120,9 @@ impl TuiApp {
             models,
             scroll_offset: 0,
             status: AppStatus::Idle,
+            message_tx: Some(tx),
+            message_rx: Some(rx),
+            pending_response: false,
         })
     }
 
@@ -212,12 +229,38 @@ pub fn run_enhanced_tui() -> Result<()> {
 
     // Habilitar ratón
     crossterm::execute!(io::stdout(), crossterm::event::EnableMouseCapture)?;
-    
+
     // Habilitar modo raw para mejor soporte de terminal
     crossterm::terminal::enable_raw_mode()?;
 
     loop {
         terminal.draw(|f| ui(f, &mut app))?;
+
+        // Check for LLM responses
+        if let Some(rx) = &app.message_rx {
+            if let Ok(msg) = rx.try_recv() {
+                match msg {
+                    TuiMessage::LlmResponse(Ok(content)) => {
+                        app.add_message("assistant", &content);
+                        app.set_status(AppStatus::Idle);
+                        app.pending_response = false;
+                    }
+                    TuiMessage::LlmResponse(Err(e)) => {
+                        app.add_message("system", &format!("❌ Error: {}", e));
+                        app.set_status(AppStatus::Error(e.to_string()));
+                        app.pending_response = false;
+                    }
+                    TuiMessage::ToolResult(result) => {
+                        app.add_message("assistant", &format!("🛠️ Resultado: {}", result));
+                    }
+                    TuiMessage::Error(e) => {
+                        app.add_message("system", &format!("❌ {}", e));
+                        app.set_status(AppStatus::Error(e));
+                        app.pending_response = false;
+                    }
+                }
+            }
+        }
 
         if crossterm::event::poll(std::time::Duration::from_millis(100))? {
             match crossterm::event::read()? {
@@ -331,6 +374,64 @@ fn show_file_diff(app: &mut TuiApp, file: &FileEntry) -> Result<()> {
     Ok(())
 }
 
+/// Enviar mensaje al LLM en background
+fn send_to_llm(app: &mut TuiApp, prompt: &str) -> Result<()> {
+    let provider = app.llm_client.provider;
+    let endpoint = app.llm_client.endpoint.clone();
+    let api_key = app.llm_client.api_key.clone();
+    let model = app.models.get(app.selected_model).cloned().unwrap_or_else(|| "llama3".to_string());
+    let tx = app.message_tx.clone().unwrap();
+
+    // Crear mensajes del chat (últimos 10 para contexto)
+    let recent_messages: Vec<Message> = app.messages
+        .iter()
+        .filter(|m| m.role == "user" || m.role == "assistant")
+        .take(10)
+        .map(|m| Message {
+            role: m.role.clone(),
+            content: m.content.clone(),
+            tool_calls: None,
+        })
+        .collect();
+
+    // Spawn thread para llamada LLM
+    std::thread::spawn(move || {
+        let client = LlmClient::from_provider(provider, api_key.clone());
+        
+        // Crear system prompt con contexto del proyecto
+        let system_prompt = format!(
+            "Eres un asistente de programación experto en SELFIDEX. \
+             Proveedor: {} | Modelo: {} | Endpoint: {}",
+            provider, model, endpoint
+        );
+
+        let mut messages = vec![Message {
+            role: "system".to_string(),
+            content: system_prompt,
+            tool_calls: None,
+        }];
+        messages.extend(recent_messages);
+
+        // Enviar request
+        let result = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(async {
+                client.chat_with_tools(model, messages, None).await
+            });
+
+        match result {
+            Ok(response) => {
+                let _ = tx.send(TuiMessage::LlmResponse(Ok(response.content().to_string())));
+            }
+            Err(e) => {
+                let _ = tx.send(TuiMessage::LlmResponse(Err(e)));
+            }
+        }
+    });
+
+    Ok(())
+}
+
 /// Manejar eventos de teclado
 fn handle_key_event(app: &mut TuiApp, key: crossterm::event::KeyEvent) -> Result<()> {
     use crossterm::event::KeyCode;
@@ -436,18 +537,22 @@ fn handle_key_event(app: &mut TuiApp, key: crossterm::event::KeyEvent) -> Result
             }
         }
         
-        // Enviar mensaje
+        // Enviar mensaje (Enter en input)
         KeyCode::Enter => {
             if !app.show_provider_selector && !app.show_model_selector && !app.input_buffer.is_empty() {
                 let input = app.input_buffer.clone();
                 app.add_message("user", &input);
                 app.input_buffer.clear();
                 app.cursor_position = 0;
-                app.set_status(crate::terminal::tui_enhanced::AppStatus::Thinking);
+                app.set_status(AppStatus::Thinking);
+                app.pending_response = true;
                 
-                // Aquí iría la llamada al LLM
-                app.add_message("assistant", "Respuesta simulada - LLM integration pending");
-                app.set_status(crate::terminal::tui_enhanced::AppStatus::Idle);
+                // Enviar al LLM en background
+                if let Err(e) = send_to_llm(app, &input) {
+                    app.add_message("system", &format!("❌ Error: {}", e));
+                    app.set_status(AppStatus::Idle);
+                    app.pending_response = false;
+                }
             }
         }
         
@@ -459,7 +564,7 @@ fn handle_key_event(app: &mut TuiApp, key: crossterm::event::KeyEvent) -> Result
         
         // Help
         KeyCode::Char('h') | KeyCode::F(1) => {
-            app.add_message("system", "🖱️ Click: Abrir archivo | P: Proveedores | M: Modelo | H: Help | ESC: Salir");
+            app.add_message("system", "🖱️ Click: Abrir archivo | P: Proveedores | M: Modelo | H: Help | ESC: Salir | Enter: Enviar");
         }
         
         _ => {}
