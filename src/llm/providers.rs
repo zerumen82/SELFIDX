@@ -216,6 +216,15 @@ pub struct LlmClient {
 }
 
 impl LlmClient {
+    /// Getters públicos
+    pub fn get_provider(&self) -> LlmProvider {
+        self.provider
+    }
+    
+    pub fn get_endpoint(&self) -> &str {
+        &self.endpoint
+    }
+
     pub fn new(config: &ProviderConfig) -> Self {
         Self {
             provider: config.provider,
@@ -365,11 +374,6 @@ impl LlmClient {
     /// Cambiar API key
     pub fn set_api_key(&mut self, api_key: &str) {
         self.api_key = Some(api_key.to_string());
-    }
-
-    /// Obtener proveedor actual
-    pub fn get_provider(&self) -> LlmProvider {
-        self.provider
     }
 }
 

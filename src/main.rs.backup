@@ -2312,20 +2312,14 @@ Responde en español.",
             let client = OllamaClient::from_env();
             
             println!("[selfidx] 🔍 Verificando Ollama...");
-
-            let ollama_available = client.is_available().await;
             
-            if !ollama_available {
+            if !client.is_available().await {
                 println!("[selfidx] ⚠️ Ollama no está corriendo");
-                println!("[selfidx] 💡 Ollama es OPCIONAL - SELFIDEX funciona con otros proveedores");
-                println!("[selfidx] 💡 Usa: selfidx provider list  (ver proveedores)");
-                println!("[selfidx] 💡 Usa: selfidx provider set groq --api-key KEY  (gratis)");
-                println!();
+                println!("[selfidx] 💡 Inicia Ollama con: ollama serve");
+                return Ok(());
             } else {
-                println!("[selfidx] ✅ Ollama disponible");
+                println!("[selfidx] ✅ Ollama ya está corriendo");
             }
-
-            // Continuar incluso si Ollama no está disponible
             
             // Default: Start interactive chat mode like Claude/Codex
             println!("═══════════════════════════════════════════");
